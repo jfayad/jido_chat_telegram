@@ -1,0 +1,210 @@
+defmodule Jido.Chat.Telegram.Transport.ExGramClient do
+  @moduledoc """
+  Default Telegram transport backed by `ExGram`.
+  """
+
+  @behaviour Jido.Chat.Telegram.Transport
+
+  alias Jido.Chat.Telegram.ExGramAdapter
+
+  @payload_keys %{
+    "chat_id" => :chat_id,
+    "callback_query_id" => :callback_query_id,
+    "message_id" => :message_id,
+    "message_thread_id" => :message_thread_id,
+    "offset" => :offset,
+    "timeout" => :timeout,
+    "limit" => :limit,
+    "allowed_updates" => :allowed_updates,
+    "text" => :text,
+    "caption" => :caption,
+    "photo" => :photo,
+    "document" => :document,
+    "media" => :media,
+    "action" => :action,
+    "reaction" => :reaction,
+    "is_big" => :is_big,
+    "show_alert" => :show_alert,
+    "url" => :url,
+    "cache_time" => :cache_time,
+    "parse_mode" => :parse_mode,
+    "reply_to_message_id" => :reply_to_message_id,
+    "disable_notification" => :disable_notification,
+    "reply_markup" => :reply_markup,
+    "disable_web_page_preview" => :disable_web_page_preview,
+    "entities" => :entities,
+    "link_preview_options" => :link_preview_options
+  }
+
+  @impl true
+  def call(token, "sendMessage", payload, opts) do
+    params = atomize_payload(payload)
+    chat_id = Map.fetch!(params, :chat_id)
+    text = Map.fetch!(params, :text)
+    method_opts = params |> Map.drop([:chat_id, :text]) |> Map.to_list()
+
+    ex_gram_module(opts).send_message(
+      chat_id,
+      text,
+      method_opts ++ ex_gram_runtime_opts(token, opts)
+    )
+  end
+
+  def call(token, "editMessageText", payload, opts) do
+    params = atomize_payload(payload)
+    text = Map.fetch!(params, :text)
+    method_opts = params |> Map.drop([:text]) |> Map.to_list()
+
+    ex_gram_module(opts).edit_message_text(
+      text,
+      method_opts ++ ex_gram_runtime_opts(token, opts)
+    )
+  end
+
+  def call(token, "deleteMessage", payload, opts) do
+    params = atomize_payload(payload)
+    chat_id = Map.fetch!(params, :chat_id)
+    message_id = Map.fetch!(params, :message_id)
+
+    ex_gram_module(opts).delete_message(
+      chat_id,
+      message_id,
+      ex_gram_runtime_opts(token, opts)
+    )
+  end
+
+  def call(token, "sendChatAction", payload, opts) do
+    params = atomize_payload(payload)
+    chat_id = Map.fetch!(params, :chat_id)
+    action = Map.get(params, :action, "typing")
+    method_opts = params |> Map.drop([:chat_id, :action]) |> Map.to_list()
+
+    ex_gram_module(opts).send_chat_action(
+      chat_id,
+      action,
+      method_opts ++ ex_gram_runtime_opts(token, opts)
+    )
+  end
+
+  def call(token, "getChat", payload, opts) do
+    params = atomize_payload(payload)
+    chat_id = Map.fetch!(params, :chat_id)
+
+    ex_gram_module(opts).get_chat(
+      chat_id,
+      ex_gram_runtime_opts(token, opts)
+    )
+  end
+
+  def call(token, "setMessageReaction", payload, opts) do
+    params = atomize_payload(payload)
+    chat_id = Map.fetch!(params, :chat_id)
+    message_id = Map.fetch!(params, :message_id)
+    reaction = Map.get(params, :reaction, [])
+    method_opts = params |> Map.drop([:chat_id, :message_id, :reaction]) |> Map.to_list()
+    module = ex_gram_module(opts)
+
+    cond do
+      function_exported?(module, :set_message_reaction, 4) ->
+        apply(module, :set_message_reaction, [
+          chat_id,
+          message_id,
+          reaction,
+          method_opts ++ ex_gram_runtime_opts(token, opts)
+        ])
+
+      function_exported?(module, :set_message_reaction, 3) ->
+        apply(module, :set_message_reaction, [
+          chat_id,
+          message_id,
+          method_opts ++ [reaction: reaction] ++ ex_gram_runtime_opts(token, opts)
+        ])
+
+      true ->
+        {:error, :unsupported_method}
+    end
+  end
+
+  def call(token, "sendPhoto", payload, opts) do
+    params = atomize_payload(payload)
+    chat_id = Map.fetch!(params, :chat_id)
+    photo = Map.fetch!(params, :photo)
+    method_opts = params |> Map.drop([:chat_id, :photo]) |> Map.to_list()
+
+    ex_gram_module(opts).send_photo(
+      chat_id,
+      photo,
+      method_opts ++ ex_gram_runtime_opts(token, opts)
+    )
+  end
+
+  def call(token, "sendDocument", payload, opts) do
+    params = atomize_payload(payload)
+    chat_id = Map.fetch!(params, :chat_id)
+    document = Map.fetch!(params, :document)
+    method_opts = params |> Map.drop([:chat_id, :document]) |> Map.to_list()
+
+    ex_gram_module(opts).send_document(
+      chat_id,
+      document,
+      method_opts ++ ex_gram_runtime_opts(token, opts)
+    )
+  end
+
+  def call(token, "answerCallbackQuery", payload, opts) do
+    params = atomize_payload(payload)
+    callback_query_id = Map.fetch!(params, :callback_query_id)
+    method_opts = params |> Map.drop([:callback_query_id]) |> Map.to_list()
+
+    ex_gram_module(opts).answer_callback_query(
+      callback_query_id,
+      method_opts ++ ex_gram_runtime_opts(token, opts)
+    )
+  end
+
+  def call(token, "getUpdates", payload, opts) do
+    params = atomize_payload(payload)
+    method_opts = Map.to_list(params)
+    module = ex_gram_module(opts)
+
+    cond do
+      function_exported?(module, :get_updates, 1) ->
+        apply(module, :get_updates, [method_opts ++ ex_gram_runtime_opts(token, opts)])
+
+      function_exported?(module, :get_updates, 0) ->
+        apply(module, :get_updates, [])
+
+      true ->
+        {:error, {:unsupported_method, "getUpdates"}}
+    end
+  end
+
+  def call(_token, method, _payload, _opts), do: {:error, {:unsupported_method, method}}
+
+  defp atomize_payload(payload) when is_map(payload) do
+    Enum.reduce(payload, %{}, fn
+      {key, value}, acc when is_atom(key) ->
+        Map.put(acc, key, value)
+
+      {key, value}, acc when is_binary(key) ->
+        case Map.fetch(@payload_keys, key) do
+          {:ok, atom_key} -> Map.put(acc, atom_key, value)
+          :error -> acc
+        end
+    end)
+  end
+
+  defp ex_gram_module(opts), do: Keyword.get(opts, :ex_gram_module, ExGram)
+
+  defp ex_gram_runtime_opts(token, opts) do
+    [token: token, adapter: ex_gram_adapter(opts)] ++ Keyword.take(opts, [:debug, :check_params])
+  end
+
+  defp ex_gram_adapter(opts) do
+    Keyword.get(
+      opts,
+      :ex_gram_adapter,
+      Application.get_env(:jido_chat_telegram, :ex_gram_adapter, ExGramAdapter)
+    )
+  end
+end
