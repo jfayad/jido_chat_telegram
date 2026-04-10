@@ -16,6 +16,9 @@ defmodule Jido.Chat.Telegram.ChannelTest do
           {:ok,
            %{"message_id" => 42, "chat" => %{"id" => payload["chat_id"]}, "date" => 1_706_745_600}}
 
+        "sendMessageDraft" ->
+          {:ok, true}
+
         "editMessageText" ->
           {:ok, true}
 
@@ -184,6 +187,90 @@ defmodule Jido.Chat.Telegram.ChannelTest do
     assert result.message_id == 42
     assert result.chat_id == 123
     assert result.date == 1_706_745_600
+  end
+
+  test "adapter stream uses telegram draft updates for private chats and final sendMessage" do
+    assert {:ok, result} =
+             Jido.Chat.Adapter.stream(
+               Jido.Chat.Telegram.Adapter,
+               123,
+               ["hel", "lo"],
+               token: "bot-token",
+               transport: MockTransport,
+               stream_update_interval_ms: 0,
+               draft_id: 7
+             )
+
+    assert_received {:transport_call, "bot-token", "sendMessageDraft", first_payload}
+    assert first_payload["chat_id"] == 123
+    assert first_payload["draft_id"] == 7
+    assert first_payload["text"] == "hel"
+
+    assert_received {:transport_call, "bot-token", "sendMessageDraft", second_payload}
+    assert second_payload["chat_id"] == 123
+    assert second_payload["draft_id"] == 7
+    assert second_payload["text"] == "hello"
+
+    assert_received {:transport_call, "bot-token", "sendMessage", final_payload}
+    assert final_payload["chat_id"] == 123
+    assert final_payload["text"] == "hello"
+
+    assert result.message_id == "42"
+    assert result.external_message_id == "42"
+    assert result.chat_id == 123
+  end
+
+  test "adapter stream skips duplicate partial draft updates" do
+    assert {:ok, _result} =
+             Jido.Chat.Adapter.stream(
+               Jido.Chat.Telegram.Adapter,
+               123,
+               ["hi", "", "", "!"],
+               token: "bot-token",
+               transport: MockTransport,
+               stream_update_interval_ms: 0,
+               draft_id: 9
+             )
+
+    assert_received {:transport_call, "bot-token", "sendMessageDraft", %{"text" => "hi"}}
+    assert_received {:transport_call, "bot-token", "sendMessageDraft", %{"text" => "hi!"}}
+    assert_received {:transport_call, "bot-token", "sendMessage", %{"text" => "hi!"}}
+
+    refute_received {:transport_call, "bot-token", "sendMessageDraft", %{"text" => ""}}
+  end
+
+  test "adapter stream falls back to one-shot send for unsupported targets" do
+    assert {:ok, result} =
+             Jido.Chat.Adapter.stream(
+               Jido.Chat.Telegram.Adapter,
+               "@channelname",
+               ["hello", " world"],
+               token: "bot-token",
+               transport: MockTransport,
+               draft_id: 7
+             )
+
+    assert_received {:transport_call, "bot-token", "sendMessage", payload}
+    assert payload["chat_id"] == "@channelname"
+    assert payload["text"] == "hello world"
+
+    refute_received {:transport_call, "bot-token", "sendMessageDraft", _payload}
+
+    assert result.external_message_id == "42"
+  end
+
+  test "adapter stream returns empty_stream when no content is produced" do
+    assert {:error, :empty_stream} =
+             Jido.Chat.Adapter.stream(
+               Jido.Chat.Telegram.Adapter,
+               123,
+               ["", ""],
+               token: "bot-token",
+               transport: MockTransport
+             )
+
+    refute_received {:transport_call, "bot-token", "sendMessageDraft", _payload}
+    refute_received {:transport_call, "bot-token", "sendMessage", _payload}
   end
 
   test "edit_message/4 handles boolean telegram response" do

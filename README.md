@@ -46,6 +46,41 @@ alias Jido.Chat.Telegram.Adapter
 
 `ExGram` is used under the hood, with a Req-backed adapter by default.
 
+## Streaming Responses
+
+Telegram live-response streaming is supported for private chats with numeric chat IDs.
+The adapter uses Telegram Bot API drafts to progressively render text in the client,
+then sends one final canonical message when generation completes.
+
+```elixir
+chunks =
+  Stream.concat([
+    ["Hello"],
+    Stream.map([" from Telegram"], fn chunk ->
+      Process.sleep(300)
+      chunk
+    end)
+  ])
+
+{:ok, sent} =
+  Jido.Chat.Adapter.stream(
+    Jido.Chat.Telegram.Adapter,
+    123_456_789,
+    chunks,
+    token: System.fetch_env!("TELEGRAM_BOT_TOKEN")
+  )
+```
+
+Notes:
+
+- This is Telegram UI streaming, not a change to Elixir stream semantics.
+- Draft streaming is only attempted for private chats with numeric chat IDs.
+- Group/channel targets fall back to a single final `sendMessage`.
+- The returned response always comes from the final sent message.
+- For manual verification in the Telegram client, use a long payload with
+  noticeable pauses between chunks. Very short payloads can appear to land as a
+  single final message even when draft updates are being accepted by the API.
+
 ## Telegram Extension Surface
 
 For Telegram-specific features that are intentionally outside core `Jido.Chat.Adapter`,

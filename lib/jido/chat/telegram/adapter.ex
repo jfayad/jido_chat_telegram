@@ -22,6 +22,7 @@ defmodule Jido.Chat.Telegram.Adapter do
     PollingWorker,
     ReactionOptions,
     SendOptions,
+    StreamOptions,
     TypingOptions
   }
 
@@ -51,7 +52,7 @@ defmodule Jido.Chat.Telegram.Adapter do
       fetch_channel_messages: :unsupported,
       list_threads: :unsupported,
       post_channel_message: :fallback,
-      stream: :fallback,
+      stream: :native,
       open_modal: :unsupported,
       webhook: :native,
       verify_webhook: :native,
@@ -133,6 +134,35 @@ defmodule Jido.Chat.Telegram.Adapter do
          status: :sent,
          raw: result
        })}
+    end
+  end
+
+  @impl true
+  def stream(chat_id, chunks, opts \\ []) do
+    opts = StreamOptions.new(opts)
+    token = fetch_token(opts.token)
+    draft_id = opts.draft_id || System.unique_integer([:positive])
+    interval_ms = normalize_stream_update_interval(opts.stream_update_interval_ms)
+
+    with {:ok, draft_chat_id} <- draft_chat_id(chat_id),
+         {:ok, state} <-
+           consume_stream_chunks(chunks, draft_chat_id, token, opts, draft_id, interval_ms) do
+      case state.text do
+        "" ->
+          {:error, :empty_stream}
+
+        text ->
+          send_message(chat_id, text, StreamOptions.send_opts(opts))
+      end
+    else
+      :fallback ->
+        fallback_stream_send(chat_id, chunks, opts)
+
+      {:error, :empty_stream} = error ->
+        error
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
@@ -699,6 +729,100 @@ defmodule Jido.Chat.Telegram.Adapter do
   defp maybe_put_action(opts, nil), do: opts
   defp maybe_put_action(opts, ""), do: opts
   defp maybe_put_action(opts, status), do: Keyword.put(opts, :action, status)
+
+  defp consume_stream_chunks(chunks, draft_chat_id, token, opts, draft_id, interval_ms) do
+    initial = %{text: "", last_draft_text: nil, last_update_ms: nil}
+
+    Enum.reduce_while(chunks, {:ok, initial}, fn chunk, {:ok, state} ->
+      next_state = %{state | text: state.text <> to_string(chunk)}
+
+      case maybe_send_draft_update(next_state, draft_chat_id, token, opts, draft_id, interval_ms) do
+        {:ok, updated_state} -> {:cont, {:ok, updated_state}}
+        {:error, reason} -> {:halt, {:error, reason}}
+        :skip -> {:cont, {:ok, next_state}}
+      end
+    end)
+  rescue
+    Protocol.UndefinedError -> {:error, :invalid_stream_chunk}
+  end
+
+  defp maybe_send_draft_update(
+         %{text: ""},
+         _draft_chat_id,
+         _token,
+         _opts,
+         _draft_id,
+         _interval_ms
+       ),
+       do: :skip
+
+  defp maybe_send_draft_update(
+         %{text: text, last_draft_text: text},
+         _draft_chat_id,
+         _token,
+         _opts,
+         _draft_id,
+         _interval_ms
+       ),
+       do: :skip
+
+  defp maybe_send_draft_update(state, draft_chat_id, token, opts, draft_id, interval_ms) do
+    now_ms = System.monotonic_time(:millisecond)
+
+    if send_draft_now?(state.last_update_ms, now_ms, interval_ms) do
+      payload =
+        StreamOptions.draft_payload_opts(opts, draft_id)
+        |> Map.merge(%{"chat_id" => draft_chat_id, "text" => state.text})
+
+      case transport(opts).call(
+             token,
+             "sendMessageDraft",
+             payload,
+             StreamOptions.transport_opts(opts)
+           ) do
+        {:ok, _result} ->
+          {:ok, %{state | last_draft_text: state.text, last_update_ms: now_ms}}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      :skip
+    end
+  end
+
+  defp send_draft_now?(nil, _now_ms, _interval_ms), do: true
+  defp send_draft_now?(_last_update_ms, _now_ms, 0), do: true
+
+  defp send_draft_now?(last_update_ms, now_ms, interval_ms),
+    do: now_ms - last_update_ms >= interval_ms
+
+  defp fallback_stream_send(chat_id, chunks, opts) do
+    text = chunks |> Enum.map(&to_string/1) |> Enum.join("")
+
+    if text == "" do
+      {:error, :empty_stream}
+    else
+      send_message(chat_id, text, StreamOptions.send_opts(StreamOptions.new(opts)))
+    end
+  rescue
+    Protocol.UndefinedError -> {:error, :invalid_stream_chunk}
+  end
+
+  defp draft_chat_id(chat_id) when is_integer(chat_id) and chat_id > 0, do: {:ok, chat_id}
+
+  defp draft_chat_id(chat_id) when is_binary(chat_id) do
+    case Integer.parse(chat_id) do
+      {parsed, ""} when parsed > 0 -> {:ok, parsed}
+      _ -> :fallback
+    end
+  end
+
+  defp draft_chat_id(_chat_id), do: :fallback
+
+  defp normalize_stream_update_interval(nil), do: 250
+  defp normalize_stream_update_interval(value) when value < 0, do: 0
+  defp normalize_stream_update_interval(value), do: value
 
   defp parse_chat_type("private"), do: :private
   defp parse_chat_type("group"), do: :group

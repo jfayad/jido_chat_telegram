@@ -17,6 +17,7 @@ defmodule Jido.Chat.Telegram.Transport.ExGramClient do
     "limit" => :limit,
     "allowed_updates" => :allowed_updates,
     "text" => :text,
+    "draft_id" => :draft_id,
     "caption" => :caption,
     "photo" => :photo,
     "document" => :document,
@@ -59,6 +60,13 @@ defmodule Jido.Chat.Telegram.Transport.ExGramClient do
       text,
       method_opts ++ ex_gram_runtime_opts(token, opts)
     )
+  end
+
+  def call(token, "sendMessageDraft", payload, opts) do
+    params = atomize_payload(payload)
+    adapter = ex_gram_http_adapter(opts)
+
+    adapter.request(:post, build_path(token, "sendMessageDraft"), params)
   end
 
   def call(token, "deleteMessage", payload, opts) do
@@ -195,6 +203,24 @@ defmodule Jido.Chat.Telegram.Transport.ExGramClient do
   end
 
   defp ex_gram_module(opts), do: Keyword.get(opts, :ex_gram_module, ExGram)
+
+  defp ex_gram_http_adapter(opts) do
+    Keyword.get(
+      opts,
+      :ex_gram_adapter,
+      ExGram.Config.get(:ex_gram, :adapter, ExGram.Adapter.Tesla)
+    )
+  end
+
+  defp build_path(token, name) do
+    token_part = "/bot#{token}"
+
+    if ExGram.test_environment?() do
+      Path.join([token_part, "test", name])
+    else
+      Path.join([token_part, name])
+    end
+  end
 
   defp ex_gram_runtime_opts(token, opts) do
     [token: token, adapter: ex_gram_adapter(opts)] ++ Keyword.take(opts, [:debug, :check_params])

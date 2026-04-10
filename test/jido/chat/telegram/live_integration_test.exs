@@ -48,6 +48,32 @@ defmodule Jido.Chat.Telegram.LiveIntegrationTest do
     assert info.id == to_string(ctx.chat_id)
   end
 
+  test "stream sends draft updates and a final message against live Telegram Bot API", ctx do
+    chunk_stream =
+      Stream.concat([
+        ["streaming"],
+        Stream.map([" response"], fn chunk ->
+          Process.sleep(300)
+          chunk
+        end)
+      ])
+
+    assert {:ok, sent} =
+             Adapter.stream(
+               ctx.chat_id,
+               chunk_stream,
+               Keyword.merge(ctx.opts,
+                 draft_id: System.unique_integer([:positive]),
+                 stream_update_interval_ms: 250
+               )
+             )
+
+    message_id = sent.message_id || sent.external_message_id
+    assert message_id
+
+    assert :ok = Adapter.delete_message(ctx.chat_id, message_id, ctx.opts)
+  end
+
   test "webhook handling pipeline processes Telegram-shaped payload", ctx do
     chat =
       Chat.new(user_name: "jido", adapters: %{telegram: Adapter})

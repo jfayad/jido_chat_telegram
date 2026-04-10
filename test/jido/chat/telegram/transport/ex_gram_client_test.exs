@@ -56,6 +56,16 @@ defmodule Jido.Chat.Telegram.Transport.ExGramClientTest do
     end
   end
 
+  defmodule MockHttpAdapter do
+    @behaviour ExGram.Adapter
+
+    @impl true
+    def request(verb, path, body) do
+      send(self(), {:http_request, verb, path, body})
+      {:ok, true}
+    end
+  end
+
   test "call/4 dispatches sendMessage via ExGram" do
     assert {:ok, %{message_id: 99}} =
              ExGramClient.call(
@@ -149,6 +159,31 @@ defmodule Jido.Chat.Telegram.Transport.ExGramClientTest do
   test "call/4 returns unsupported for unknown methods" do
     assert {:error, {:unsupported_method, "unknownMethod"}} =
              ExGramClient.call("abc", "unknownMethod", %{}, [])
+  end
+
+  test "call/4 dispatches sendMessageDraft via the configured HTTP adapter" do
+    assert {:ok, true} =
+             ExGramClient.call(
+               "abc",
+               "sendMessageDraft",
+               %{
+                 "chat_id" => 1,
+                 "message_thread_id" => 9,
+                 "draft_id" => 77,
+                 "text" => "hello",
+                 "parse_mode" => "Markdown",
+                 "entities" => [%{"type" => "bold", "offset" => 0, "length" => 5}]
+               },
+               ex_gram_adapter: MockHttpAdapter
+             )
+
+    assert_received {:http_request, :post, "/botabc/sendMessageDraft", body}
+    assert body.chat_id == 1
+    assert body.message_thread_id == 9
+    assert body.draft_id == 77
+    assert body.text == "hello"
+    assert body.parse_mode == "Markdown"
+    assert body.entities == [%{"type" => "bold", "offset" => 0, "length" => 5}]
   end
 
   test "call/4 dispatches setMessageReaction via ExGram when available" do
