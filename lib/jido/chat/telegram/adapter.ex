@@ -9,6 +9,7 @@ defmodule Jido.Chat.Telegram.Adapter do
     ChannelInfo,
     EphemeralMessage,
     EventEnvelope,
+    FileUpload,
     Incoming,
     Response,
     WebhookRequest,
@@ -18,6 +19,7 @@ defmodule Jido.Chat.Telegram.Adapter do
   alias Jido.Chat.Telegram.{
     DeleteOptions,
     EditOptions,
+    Extensions,
     MetadataOptions,
     PollingWorker,
     ReactionOptions,
@@ -38,6 +40,7 @@ defmodule Jido.Chat.Telegram.Adapter do
       initialize: :fallback,
       shutdown: :fallback,
       send_message: :native,
+      send_file: :native,
       edit_message: :native,
       delete_message: :native,
       start_typing: :native,
@@ -51,6 +54,7 @@ defmodule Jido.Chat.Telegram.Adapter do
       fetch_messages: :unsupported,
       fetch_channel_messages: :unsupported,
       list_threads: :unsupported,
+      open_thread: :native,
       post_channel_message: :fallback,
       stream: :native,
       open_modal: :unsupported,
@@ -163,6 +167,15 @@ defmodule Jido.Chat.Telegram.Adapter do
 
       {:error, _reason} = error ->
         error
+    end
+  end
+
+  def send_file(chat_id, file, opts \\ []) do
+    upload = FileUpload.normalize(file)
+
+    with {:ok, input} <- upload_input(upload),
+         {:ok, media} <- deliver_upload(chat_id, upload, input, opts) do
+      {:ok, upload_response(upload, media, chat_id)}
     end
   end
 
@@ -358,6 +371,34 @@ defmodule Jido.Chat.Telegram.Adapter do
   def open_dm(external_user_id, _opts \\ []), do: {:ok, external_user_id}
 
   @impl true
+  def open_thread(chat_id, _message_id, opts \\ []) do
+    if Keyword.get(opts, :supports_forum_topics, true) do
+      token = fetch_token(opts[:token])
+      topic_name = Keyword.get(opts, :topic_name, "New thread")
+
+      transport_opts =
+        pick_opts(opts, [:transport, :debug, :check_params, :ex_gram_module, :ex_gram_adapter])
+
+      with {:ok, result} <-
+             transport(opts).call(
+               token,
+               "createForumTopic",
+               %{"chat_id" => chat_id, "name" => topic_name},
+               transport_opts
+             ) do
+        {:ok,
+         %{
+           external_thread_id:
+             stringify(map_get(result, [:message_thread_id, "message_thread_id"])),
+           delivery_external_room_id: stringify(chat_id)
+         }}
+      end
+    else
+      {:error, :unsupported}
+    end
+  end
+
+  @impl true
   def post_ephemeral(_chat_id, user_id, text, opts \\ []) do
     if Keyword.get(opts, :fallback_to_dm, false) do
       send_opts = Keyword.drop(opts, [:fallback_to_dm])
@@ -513,6 +554,85 @@ defmodule Jido.Chat.Telegram.Adapter do
   end
 
   defp parse_payload_event(_payload), do: {:ok, :noop}
+
+  defp deliver_upload(chat_id, %FileUpload{kind: :image} = upload, input, opts) do
+    Extensions.send_photo(chat_id, input, upload_opts(upload, opts))
+  end
+
+  defp deliver_upload(chat_id, %FileUpload{} = upload, input, opts) do
+    Extensions.send_document(chat_id, input, upload_opts(upload, opts))
+  end
+
+  defp upload_opts(%FileUpload{} = upload, opts) do
+    opts
+    |> pick_opts([
+      :token,
+      :transport,
+      :caption,
+      :text,
+      :parse_mode,
+      :reply_to_id,
+      :reply_to_message_id,
+      :thread_id,
+      :external_thread_id,
+      :reply_markup,
+      :disable_notification,
+      :debug,
+      :check_params,
+      :ex_gram_module,
+      :ex_gram_adapter
+    ])
+    |> maybe_put_option(:caption, upload_caption(upload))
+  end
+
+  defp upload_response(%FileUpload{} = upload, media, chat_id) do
+    delivered_kind =
+      case media.kind do
+        :photo -> :image
+        _ -> upload.kind
+      end
+
+    Response.new(%{
+      message_id: media.message_id,
+      chat_id: media.chat_id || chat_id,
+      date: media.date,
+      channel_type: :telegram,
+      status: :sent,
+      raw: media.raw,
+      metadata:
+        media.metadata
+        |> Map.put(:file_id, media.file_id)
+        |> Map.put(:upload_kind, upload.kind)
+        |> Map.put(:delivered_kind, delivered_kind)
+    })
+  end
+
+  defp upload_input(%FileUpload{url: url}) when is_binary(url) and url != "", do: {:ok, url}
+
+  defp upload_input(%FileUpload{path: path}) when is_binary(path) and path != "" do
+    {:ok, {:file, path}}
+  end
+
+  defp upload_input(%FileUpload{data: data, filename: filename})
+       when is_binary(data) and data != "" and is_binary(filename) and filename != "" do
+    {:ok, {:file_content, data, filename}}
+  end
+
+  defp upload_input(%FileUpload{data: data}) when is_binary(data) and data != "" do
+    {:error, :missing_filename}
+  end
+
+  defp upload_input(_upload), do: {:error, :missing_file_source}
+
+  defp upload_caption(%FileUpload{} = upload) do
+    metadata = upload.metadata || %{}
+
+    metadata[:caption] || metadata["caption"] || metadata[:alt_text] || metadata["alt_text"] ||
+      metadata[:transcript] || metadata["transcript"]
+  end
+
+  defp maybe_put_option(opts, _key, value) when value in [nil, ""], do: opts
+  defp maybe_put_option(opts, key, value), do: Keyword.put_new(opts, key, value)
 
   defp update_message(payload) when is_map(payload) do
     map_get(payload, [:message, "message"]) ||

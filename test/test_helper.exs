@@ -16,4 +16,4 @@ if Code.ensure_loaded?(Dotenvy) do
   end)
 end
 
-ExUnit.start()
+ExUnit.start(exclude: [:live])

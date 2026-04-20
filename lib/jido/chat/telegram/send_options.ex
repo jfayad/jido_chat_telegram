@@ -37,7 +37,12 @@ defmodule Jido.Chat.Telegram.SendOptions do
   @doc "Builds typed send options from keyword, map, or struct input."
   def new(%__MODULE__{} = opts), do: opts
   def new(opts) when is_list(opts), do: opts |> Map.new() |> new()
-  def new(opts) when is_map(opts), do: Jido.Chat.Schema.parse!(__MODULE__, @schema, opts)
+
+  def new(opts) when is_map(opts) do
+    opts
+    |> normalize_generic_reply_and_thread()
+    |> then(&Jido.Chat.Schema.parse!(__MODULE__, @schema, &1))
+  end
 
   @doc "Builds Telegram API payload options for `sendMessage`."
   @spec payload_opts(t()) :: map()
@@ -68,4 +73,27 @@ defmodule Jido.Chat.Telegram.SendOptions do
 
   defp maybe_kw(keyword, _key, nil), do: keyword
   defp maybe_kw(keyword, key, value), do: Keyword.put(keyword, key, value)
+
+  defp normalize_generic_reply_and_thread(opts) do
+    opts
+    |> maybe_put_alias(:reply_to_message_id, [:reply_to_id])
+    |> maybe_put_alias(:thread_id, [:external_thread_id])
+  end
+
+  defp maybe_put_alias(opts, target_key, source_keys) do
+    target_value =
+      Map.get(opts, target_key) ||
+        Map.get(opts, Atom.to_string(target_key))
+
+    source_value =
+      Enum.find_value(source_keys, fn key ->
+        Map.get(opts, key) || Map.get(opts, Atom.to_string(key))
+      end)
+
+    case {target_value, source_value} do
+      {nil, nil} -> opts
+      {nil, value} -> Map.put(opts, target_key, value)
+      _ -> opts
+    end
+  end
 end

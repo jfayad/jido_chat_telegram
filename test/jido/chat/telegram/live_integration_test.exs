@@ -4,15 +4,31 @@ defmodule Jido.Chat.Telegram.LiveIntegrationTest do
   alias Jido.Chat
   alias Jido.Chat.Telegram.Adapter
   alias Jido.Chat.Telegram.Extensions
+  alias Jido.Chat.FileUpload
 
   @run_live System.get_env("RUN_LIVE_TELEGRAM_TESTS") in ["1", "true", "TRUE", "yes", "on"]
   @token System.get_env("TELEGRAM_BOT_TOKEN")
   @chat_id System.get_env("TELEGRAM_TEST_CHAT_ID")
+  @thread_id (case System.get_env("TELEGRAM_TEST_THREAD_ID") do
+                nil ->
+                  nil
+
+                "" ->
+                  nil
+
+                value ->
+                  case Integer.parse(value) do
+                    {int, ""} -> int
+                    _ -> value
+                  end
+              end)
   @callback_query_id System.get_env("TELEGRAM_TEST_CALLBACK_QUERY_ID")
+  @reaction System.get_env("TELEGRAM_TEST_REACTION") || "👍"
   @photo_ref System.get_env("TELEGRAM_TEST_PHOTO_REF")
   @document_ref System.get_env("TELEGRAM_TEST_DOCUMENT_REF")
 
   @moduletag :live
+  @moduletag :telegram_live
 
   if not @run_live do
     @moduletag skip: "set RUN_LIVE_TELEGRAM_TESTS=true to run live Telegram integration tests"
@@ -74,6 +90,77 @@ defmodule Jido.Chat.Telegram.LiveIntegrationTest do
     assert :ok = Adapter.delete_message(ctx.chat_id, message_id, ctx.opts)
   end
 
+  test "reply continuity preserves reply_to metadata and optional topic routing", ctx do
+    root_text = "jido telegram reply root #{System.system_time(:millisecond)}"
+    reply_text = "jido telegram reply child #{System.system_time(:millisecond)}"
+
+    assert {:ok, root} = Adapter.send_message(ctx.chat_id, root_text, ctx.opts)
+    root_id = message_id(root)
+
+    on_exit(fn ->
+      cleanup_delete(fn ->
+        Adapter.delete_message(ctx.chat_id, root_id, ctx.opts)
+      end)
+    end)
+
+    assert {:ok, reply} =
+             Adapter.send_message(
+               ctx.chat_id,
+               reply_text,
+               Keyword.put(ctx.opts, :reply_to_id, root_id)
+             )
+
+    reply_id = message_id(reply)
+
+    on_exit(fn ->
+      cleanup_delete(fn ->
+        Adapter.delete_message(ctx.chat_id, reply_id, ctx.opts)
+      end)
+    end)
+
+    reply_to_message = map_get(reply.raw, [:reply_to_message, "reply_to_message"])
+
+    if is_map(reply_to_message) do
+      assert to_string(map_get(reply_to_message, [:message_id, "message_id"])) == root_id
+    else
+      assert reply_id != root_id
+
+      assert to_string(map_get(reply.raw, [:chat, "chat"]) |> map_get([:id, "id"])) ==
+               to_string(ctx.chat_id)
+    end
+
+    if @thread_id do
+      assert to_string(map_get(reply.raw, [:message_thread_id, "message_thread_id"])) ==
+               to_string(@thread_id)
+    end
+  end
+
+  test "reaction flow is either native or explicitly unsupported", ctx do
+    assert {:ok, sent} =
+             Adapter.send_message(
+               ctx.chat_id,
+               "jido telegram reaction target #{System.system_time(:millisecond)}",
+               ctx.opts
+             )
+
+    message_id = message_id(sent)
+
+    on_exit(fn ->
+      cleanup_delete(fn ->
+        Adapter.delete_message(ctx.chat_id, message_id, ctx.opts)
+      end)
+    end)
+
+    case Adapter.add_reaction(ctx.chat_id, message_id, @reaction, ctx.opts) do
+      :ok ->
+        assert :ok = Adapter.remove_reaction(ctx.chat_id, message_id, @reaction, ctx.opts)
+
+      {:error, :unsupported} ->
+        assert {:error, :unsupported} =
+                 Adapter.remove_reaction(ctx.chat_id, message_id, @reaction, ctx.opts)
+    end
+  end
+
   test "webhook handling pipeline processes Telegram-shaped payload", ctx do
     chat =
       Chat.new(user_name: "jido", adapters: %{telegram: Adapter})
@@ -117,6 +204,56 @@ defmodule Jido.Chat.Telegram.LiveIntegrationTest do
     assert to_string(document.chat_id) == to_string(ctx.chat_id)
   end
 
+  test "canonical media sends succeed through send_file and core post_message", ctx do
+    photo_ref = @photo_ref || "https://httpbin.org/image/png"
+
+    document_ref =
+      @document_ref || "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf"
+
+    photo_upload =
+      FileUpload.new(%{
+        kind: :image,
+        url: photo_ref,
+        filename: "live-photo.png",
+        metadata: %{caption: "jido canonical photo #{System.system_time(:millisecond)}"}
+      })
+
+    assert {:ok, photo} = Adapter.send_file(ctx.chat_id, photo_upload, ctx.opts)
+    photo_id = photo.external_message_id || photo.message_id
+
+    on_exit(fn ->
+      cleanup_delete(fn ->
+        Adapter.delete_message(ctx.chat_id, photo_id, ctx.opts)
+      end)
+    end)
+
+    payload =
+      Jido.Chat.PostPayload.new(%{
+        text: "jido canonical document #{System.system_time(:millisecond)}",
+        files: [
+          %{
+            kind: :file,
+            url: document_ref,
+            filename: "live-document.pdf"
+          }
+        ]
+      })
+
+    assert {:ok, document} =
+             Jido.Chat.Adapter.post_message(Adapter, ctx.chat_id, payload, ctx.opts)
+
+    document_id = document.external_message_id || document.message_id
+
+    on_exit(fn ->
+      cleanup_delete(fn ->
+        Adapter.delete_message(ctx.chat_id, document_id, ctx.opts)
+      end)
+    end)
+
+    assert photo_id
+    assert document_id
+  end
+
   test "webhook handling supports channel_post and edited_channel_post shapes", ctx do
     chat = Chat.new(user_name: "jido", adapters: %{telegram: Adapter})
 
@@ -151,6 +288,9 @@ defmodule Jido.Chat.Telegram.LiveIntegrationTest do
     assert {:error, :unsupported} = Adapter.list_threads(ctx.chat_id, ctx.opts)
 
     assert {:error, :unsupported} =
+             Adapter.post_ephemeral(ctx.chat_id, "telegram-user", "secret", ctx.opts)
+
+    assert {:error, :unsupported} =
              Jido.Chat.Adapter.open_modal(Adapter, ctx.chat_id, %{title: "modal"}, ctx.opts)
   end
 
@@ -182,19 +322,27 @@ defmodule Jido.Chat.Telegram.LiveIntegrationTest do
   defp adapter_opts(token) do
     opts = [token: token]
 
-    case parse_optional_int(System.get_env("TELEGRAM_TEST_THREAD_ID")) do
+    case @thread_id do
       nil -> opts
       thread_id -> Keyword.put(opts, :thread_id, thread_id)
     end
   end
 
-  defp parse_optional_int(nil), do: nil
-  defp parse_optional_int(""), do: nil
+  defp message_id(%{message_id: value}) when not is_nil(value), do: to_string(value)
+  defp message_id(%{external_message_id: value}) when not is_nil(value), do: to_string(value)
 
-  defp parse_optional_int(value) when is_binary(value) do
-    case Integer.parse(value) do
-      {int, ""} -> int
-      _ -> value
+  defp cleanup_delete(fun) when is_function(fun, 0) do
+    case fun.() do
+      :ok -> :ok
+      {:ok, _result} -> :ok
+      {:error, :not_found} -> :ok
+      {:error, _reason} -> :ok
     end
   end
+
+  defp map_get(map, keys) when is_map(map) and is_list(keys) do
+    Enum.find_value(keys, fn key -> Map.get(map, key) end)
+  end
+
+  defp map_get(_map, _keys), do: nil
 end

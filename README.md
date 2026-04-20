@@ -9,8 +9,6 @@ It is part of the Elixir implementation aligned to the Vercel Chat SDK
 ([chat-sdk.dev/docs](https://www.chat-sdk.dev/docs)).
 
 `Jido.Chat.Telegram.Adapter` is the canonical adapter module and uses `ExGram` as the Telegram client.
-
-`Jido.Chat.Telegram.Channel` is kept as a compatibility wrapper for legacy `Jido.Chat.Channel` integrations.
 No Telegex dependency is required.
 
 ## Installation
@@ -160,6 +158,16 @@ cp .env.example .env
 ```bash
 mix test test/jido/chat/telegram/live_integration_test.exs
 ```
+
+Current live coverage in that file includes:
+
+- send, edit, and delete
+- typing and metadata
+- reply continuity and optional topic routing
+- reactions, with explicit unsupported acceptance when the Bot API feature is unavailable
+- media sends through `Jido.Chat.Telegram.Extensions`
+- webhook-shaped ingress
+- unsupported-core contract checks
 
 If you need `TELEGRAM_TEST_CHAT_ID`, use the helper script:
 
