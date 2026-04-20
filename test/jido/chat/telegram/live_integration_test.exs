@@ -66,11 +66,22 @@ defmodule Jido.Chat.Telegram.LiveIntegrationTest do
   end
 
   test "stream sends draft updates and a final message against live Telegram Bot API", ctx do
+    parts = [
+      "jido",
+      " telegram",
+      " streaming",
+      " draft",
+      " updates",
+      " should",
+      " be",
+      " visible"
+    ]
+
     chunk_stream =
       Stream.concat([
-        ["streaming"],
-        Stream.map([" response"], fn chunk ->
-          Process.sleep(300)
+        [hd(parts)],
+        Stream.map(tl(parts), fn chunk ->
+          Process.sleep(650)
           chunk
         end)
       ])
@@ -81,13 +92,14 @@ defmodule Jido.Chat.Telegram.LiveIntegrationTest do
                chunk_stream,
                Keyword.merge(ctx.opts,
                  draft_id: System.unique_integer([:positive]),
-                 stream_update_interval_ms: 250
+                 stream_update_interval_ms: 500
                )
              )
 
     message_id = sent.message_id || sent.external_message_id
     assert message_id
 
+    Process.sleep(2_000)
     assert :ok = Adapter.delete_message(ctx.chat_id, message_id, ctx.opts)
   end
 

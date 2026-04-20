@@ -61,6 +61,13 @@ defmodule Jido.Chat.Telegram.AdapterSurfaceTest do
              "document" => %{"file_id" => "document-file-id"},
              "caption" => payload["caption"]
            }}
+
+        "createForumTopic" ->
+          {:ok,
+           %{
+             "message_thread_id" => 321,
+             "name" => payload["name"]
+           }}
       end
     end
   end
@@ -456,6 +463,70 @@ defmodule Jido.Chat.Telegram.AdapterSurfaceTest do
     assert payload["message_thread_id"] == 99
   end
 
+  test "send_file/3 supports filesystem paths and raw byte uploads" do
+    path =
+      Path.join(
+        System.tmp_dir!(),
+        "jido-telegram-upload-#{System.unique_integer([:positive])}.txt"
+      )
+
+    File.write!(path, "telegram path upload\n")
+
+    on_exit(fn ->
+      File.rm(path)
+    end)
+
+    assert {:ok, path_response} =
+             Adapter.send_file(
+               123,
+               %FileUpload{
+                 kind: :file,
+                 path: path,
+                 filename: Path.basename(path)
+               },
+               token: "bot-token",
+               transport: MockTransport
+             )
+
+    assert path_response.external_message_id == "78"
+    assert_received {:transport_call, "bot-token", "sendDocument", path_payload}
+    assert path_payload["document"] == {:file, path}
+
+    assert {:ok, data_response} =
+             Adapter.send_file(
+               123,
+               %FileUpload{
+                 kind: :file,
+                 data: "telegram bytes upload\n",
+                 filename: "bytes.txt"
+               },
+               token: "bot-token",
+               transport: MockTransport
+             )
+
+    assert data_response.external_message_id == "78"
+    assert_received {:transport_call, "bot-token", "sendDocument", data_payload}
+    assert data_payload["document"] == {:file_content, "telegram bytes upload\n", "bytes.txt"}
+  end
+
+  test "send_file/3 returns explicit validation errors for missing upload data" do
+    assert {:error, :missing_filename} =
+             Adapter.send_file(
+               123,
+               %FileUpload{kind: :file, data: "telegram bytes upload\n"},
+               token: "bot-token",
+               transport: MockTransport
+             )
+
+    assert {:error, :missing_file_source} =
+             Adapter.send_file(
+               123,
+               %FileUpload{kind: :file, filename: "missing.txt"},
+               token: "bot-token",
+               transport: MockTransport
+             )
+  end
+
   test "core post_message/4 uses telegram send_file support for canonical uploads" do
     payload =
       PostPayload.new(%{
@@ -510,6 +581,31 @@ defmodule Jido.Chat.Telegram.AdapterSurfaceTest do
     assert {:error, :unsupported} = Adapter.fetch_messages(123, [])
     assert {:error, :unsupported} = Adapter.fetch_channel_messages(123, [])
     assert {:error, :unsupported} = Adapter.list_threads(123, [])
+  end
+
+  test "open_thread/3 creates forum topics and normalizes room/thread ids" do
+    assert {:ok, thread} =
+             Adapter.open_thread(123, nil,
+               token: "bot-token",
+               topic_name: "Live Review",
+               transport: MockTransport
+             )
+
+    assert thread.external_thread_id == "321"
+    assert thread.delivery_external_room_id == "123"
+
+    assert_received {:transport_call, "bot-token", "createForumTopic", payload}
+    assert payload["chat_id"] == 123
+    assert payload["name"] == "Live Review"
+  end
+
+  test "open_thread/3 can be explicitly disabled" do
+    assert {:error, :unsupported} =
+             Adapter.open_thread(123, nil,
+               token: "bot-token",
+               supports_forum_topics: false,
+               transport: MockTransport
+             )
   end
 
   test "handle_webhook/3 normalizes and routes through Jido.Chat.process_message/5" do

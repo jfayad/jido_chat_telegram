@@ -844,6 +844,7 @@ defmodule Jido.Chat.Telegram.Adapter do
             "missing Telegram bot token; pass :token option or configure :jido_chat_telegram, :telegram_bot_token"
   end
 
+  defp transport(opts) when is_list(opts), do: transport(Map.new(opts))
   defp transport(%{transport: transport}) when not is_nil(transport), do: transport
   defp transport(_opts), do: ExGramClient
 
