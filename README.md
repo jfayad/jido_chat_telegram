@@ -163,9 +163,13 @@ Current live coverage in that file includes:
 
 - send, edit, and delete
 - typing and metadata
+- streaming draft updates and final message send
 - reply continuity and optional topic routing
+- local file uploads from disk paths and in-memory byte payloads
+- forum topic creation via `open_thread/3` when `TELEGRAM_TEST_FORUM_CHAT_ID` is set
 - reactions, with explicit unsupported acceptance when the Bot API feature is unavailable
 - media sends through `Jido.Chat.Telegram.Extensions`
+- canonical media sends through `send_file/3` and core `post_message/4`
 - webhook-shaped ingress
 - unsupported-core contract checks
 

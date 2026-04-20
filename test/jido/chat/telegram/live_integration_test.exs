@@ -9,6 +9,7 @@ defmodule Jido.Chat.Telegram.LiveIntegrationTest do
   @run_live System.get_env("RUN_LIVE_TELEGRAM_TESTS") in ["1", "true", "TRUE", "yes", "on"]
   @token System.get_env("TELEGRAM_BOT_TOKEN")
   @chat_id System.get_env("TELEGRAM_TEST_CHAT_ID")
+  @forum_chat_id System.get_env("TELEGRAM_TEST_FORUM_CHAT_ID")
   @thread_id (case System.get_env("TELEGRAM_TEST_THREAD_ID") do
                 nil ->
                   nil
@@ -254,6 +255,92 @@ defmodule Jido.Chat.Telegram.LiveIntegrationTest do
     assert document_id
   end
 
+  test "send_file accepts local filesystem paths and raw byte uploads", ctx do
+    path =
+      write_temp_file(
+        "jido-telegram-live-",
+        ".txt",
+        "telegram live file #{System.system_time(:millisecond)}\n"
+      )
+
+    on_exit(fn ->
+      File.rm(path)
+    end)
+
+    path_upload =
+      FileUpload.new(%{
+        kind: :file,
+        path: path,
+        filename: Path.basename(path)
+      })
+
+    assert {:ok, path_response} = Adapter.send_file(ctx.chat_id, path_upload, ctx.opts)
+    path_message_id = path_response.external_message_id || path_response.message_id
+
+    on_exit(fn ->
+      cleanup_delete(fn ->
+        Adapter.delete_message(ctx.chat_id, path_message_id, ctx.opts)
+      end)
+    end)
+
+    bytes_upload =
+      FileUpload.new(%{
+        kind: :file,
+        data: "telegram live bytes #{System.system_time(:millisecond)}\n",
+        filename: "telegram-live-bytes.txt",
+        media_type: "text/plain"
+      })
+
+    assert {:ok, bytes_response} = Adapter.send_file(ctx.chat_id, bytes_upload, ctx.opts)
+    bytes_message_id = bytes_response.external_message_id || bytes_response.message_id
+
+    on_exit(fn ->
+      cleanup_delete(fn ->
+        Adapter.delete_message(ctx.chat_id, bytes_message_id, ctx.opts)
+      end)
+    end)
+
+    assert path_message_id
+    assert bytes_message_id
+  end
+
+  if @forum_chat_id not in [nil, ""] do
+    test "open_thread creates a forum topic when TELEGRAM_TEST_FORUM_CHAT_ID is provided", ctx do
+      topic_name = "jido live topic #{System.system_time(:millisecond)}"
+
+      assert {:ok, topic} =
+               Adapter.open_thread(@forum_chat_id, nil,
+                 token: ctx.token,
+                 supports_forum_topics: true,
+                 topic_name: topic_name
+               )
+
+      assert topic.external_thread_id
+      assert to_string(topic.delivery_external_room_id) == to_string(@forum_chat_id)
+
+      assert {:ok, sent} =
+               Adapter.send_message(
+                 @forum_chat_id,
+                 "jido live topic message #{System.system_time(:millisecond)}",
+                 token: ctx.token,
+                 thread_id: topic.external_thread_id
+               )
+
+      message_id = message_id(sent)
+      assert message_id
+
+      on_exit(fn ->
+        cleanup_delete(fn ->
+          Adapter.delete_message(@forum_chat_id, message_id, token: ctx.token)
+        end)
+      end)
+    end
+  else
+    test "open_thread requires TELEGRAM_TEST_FORUM_CHAT_ID for live forum coverage" do
+      assert is_nil(@forum_chat_id) or @forum_chat_id == ""
+    end
+  end
+
   test "webhook handling supports channel_post and edited_channel_post shapes", ctx do
     chat = Chat.new(user_name: "jido", adapters: %{telegram: Adapter})
 
@@ -338,6 +425,17 @@ defmodule Jido.Chat.Telegram.LiveIntegrationTest do
       {:error, :not_found} -> :ok
       {:error, _reason} -> :ok
     end
+  end
+
+  defp write_temp_file(prefix, suffix, contents) do
+    path =
+      Path.join(
+        System.tmp_dir!(),
+        "#{prefix}#{System.unique_integer([:positive])}#{suffix}"
+      )
+
+    File.write!(path, contents)
+    path
   end
 
   defp map_get(map, keys) when is_map(map) and is_list(keys) do
