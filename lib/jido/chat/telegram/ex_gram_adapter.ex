@@ -8,7 +8,9 @@ defmodule Jido.Chat.Telegram.ExGramAdapter do
   @base_url "https://api.telegram.org"
 
   @impl ExGram.Adapter
-  def request(verb, path, body) do
+  def request(verb, path, body, opts \\ []) do
+    _opts = opts
+
     [method: coerce_verb(verb), url: path]
     |> Req.Request.new()
     |> Req.Request.register_options([:base_url, :json, :form_multipart])

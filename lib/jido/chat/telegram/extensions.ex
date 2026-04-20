@@ -122,9 +122,13 @@ defmodule Jido.Chat.Telegram.Extensions do
   @doc """
   Sends a Telegram photo message and returns a typed media result.
   """
-  @spec send_photo(String.t() | integer(), String.t(), keyword() | map() | PhotoOptions.t()) ::
+  @spec send_photo(
+          String.t() | integer(),
+          String.t() | {:file, String.t()} | {:file_content, binary(), String.t()},
+          keyword() | map() | PhotoOptions.t()
+        ) ::
           {:ok, MediaMessage.t()} | {:error, term()}
-  def send_photo(chat_id, photo, opts \\ []) when is_binary(photo) do
+  def send_photo(chat_id, photo, opts \\ []) do
     opts = PhotoOptions.new(opts)
     token = fetch_token(opts.token)
 
@@ -143,11 +147,11 @@ defmodule Jido.Chat.Telegram.Extensions do
   """
   @spec send_document(
           String.t() | integer(),
-          String.t(),
+          String.t() | {:file, String.t()} | {:file_content, binary(), String.t()},
           keyword() | map() | DocumentOptions.t()
         ) ::
           {:ok, MediaMessage.t()} | {:error, term()}
-  def send_document(chat_id, document, opts \\ []) when is_binary(document) do
+  def send_document(chat_id, document, opts \\ []) do
     opts = DocumentOptions.new(opts)
     token = fetch_token(opts.token)
 

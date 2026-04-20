@@ -5,6 +5,7 @@ defmodule Jido.Chat.Telegram.Transport.ExGramClient do
 
   @behaviour Jido.Chat.Telegram.Transport
 
+  alias ExGram.Model.{ReactionTypeCustomEmoji, ReactionTypeEmoji, ReactionTypePaid}
   alias Jido.Chat.Telegram.ExGramAdapter
 
   @payload_keys %{
@@ -12,6 +13,7 @@ defmodule Jido.Chat.Telegram.Transport.ExGramClient do
     "callback_query_id" => :callback_query_id,
     "message_id" => :message_id,
     "message_thread_id" => :message_thread_id,
+    "name" => :name,
     "offset" => :offset,
     "timeout" => :timeout,
     "limit" => :limit,
@@ -106,9 +108,9 @@ defmodule Jido.Chat.Telegram.Transport.ExGramClient do
 
   def call(token, "setMessageReaction", payload, opts) do
     params = atomize_payload(payload)
-    chat_id = Map.fetch!(params, :chat_id)
-    message_id = Map.fetch!(params, :message_id)
-    reaction = Map.get(params, :reaction, [])
+    chat_id = params |> Map.fetch!(:chat_id) |> normalize_numeric_identifier()
+    message_id = params |> Map.fetch!(:message_id) |> normalize_numeric_identifier()
+    reaction = params |> Map.get(:reaction, []) |> normalize_reaction_types()
     method_opts = params |> Map.drop([:chat_id, :message_id, :reaction]) |> Map.to_list()
     module = ex_gram_module(opts)
 
@@ -187,6 +189,32 @@ defmodule Jido.Chat.Telegram.Transport.ExGramClient do
     end
   end
 
+  def call(token, "createForumTopic", payload, opts) do
+    params = atomize_payload(payload)
+    chat_id = Map.fetch!(params, :chat_id)
+    name = Map.fetch!(params, :name)
+    method_opts = params |> Map.drop([:chat_id, :name]) |> Map.to_list()
+    module = ex_gram_module(opts)
+
+    cond do
+      function_exported?(module, :create_forum_topic, 3) ->
+        apply(module, :create_forum_topic, [
+          chat_id,
+          name,
+          method_opts ++ ex_gram_runtime_opts(token, opts)
+        ])
+
+      function_exported?(module, :create_forum_topic, 2) ->
+        apply(module, :create_forum_topic, [
+          chat_id,
+          [name: name] ++ method_opts ++ ex_gram_runtime_opts(token, opts)
+        ])
+
+      true ->
+        {:error, :unsupported_method}
+    end
+  end
+
   def call(_token, method, _payload, _opts), do: {:error, {:unsupported_method, method}}
 
   defp atomize_payload(payload) when is_map(payload) do
@@ -205,11 +233,7 @@ defmodule Jido.Chat.Telegram.Transport.ExGramClient do
   defp ex_gram_module(opts), do: Keyword.get(opts, :ex_gram_module, ExGram)
 
   defp ex_gram_http_adapter(opts) do
-    Keyword.get(
-      opts,
-      :ex_gram_adapter,
-      ExGram.Config.get(:ex_gram, :adapter, ExGram.Adapter.Tesla)
-    )
+    ex_gram_adapter(opts)
   end
 
   defp build_path(token, name) do
@@ -233,4 +257,45 @@ defmodule Jido.Chat.Telegram.Transport.ExGramClient do
       Application.get_env(:jido_chat_telegram, :ex_gram_adapter, ExGramAdapter)
     )
   end
+
+  defp normalize_reaction_types(reactions) when is_list(reactions) do
+    Enum.map(reactions, &normalize_reaction_type/1)
+  end
+
+  defp normalize_reaction_types(other), do: other
+
+  defp normalize_reaction_type(%{"type" => "emoji", "emoji" => emoji}) do
+    %ReactionTypeEmoji{type: "emoji", emoji: emoji}
+  end
+
+  defp normalize_reaction_type(%{type: "emoji", emoji: emoji}) do
+    %ReactionTypeEmoji{type: "emoji", emoji: emoji}
+  end
+
+  defp normalize_reaction_type(%{"type" => "custom_emoji", "custom_emoji_id" => custom_emoji_id}) do
+    %ReactionTypeCustomEmoji{type: "custom_emoji", custom_emoji_id: custom_emoji_id}
+  end
+
+  defp normalize_reaction_type(%{type: "custom_emoji", custom_emoji_id: custom_emoji_id}) do
+    %ReactionTypeCustomEmoji{type: "custom_emoji", custom_emoji_id: custom_emoji_id}
+  end
+
+  defp normalize_reaction_type(%{"type" => "paid"}) do
+    %ReactionTypePaid{type: "paid"}
+  end
+
+  defp normalize_reaction_type(%{type: "paid"}) do
+    %ReactionTypePaid{type: "paid"}
+  end
+
+  defp normalize_reaction_type(other), do: other
+
+  defp normalize_numeric_identifier(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, ""} -> int
+      _ -> value
+    end
+  end
+
+  defp normalize_numeric_identifier(value), do: value
 end

@@ -1,8 +1,10 @@
-defmodule Jido.Chat.Telegram.ChannelTest do
+defmodule Jido.Chat.Telegram.AdapterSurfaceTest do
   use ExUnit.Case, async: true
 
   alias Jido.Chat
-  alias Jido.Chat.Telegram.Channel
+  alias Jido.Chat.Adapter, as: ChatAdapter
+  alias Jido.Chat.{Capabilities, FileUpload, PostPayload}
+  alias Jido.Chat.Telegram.Adapter
 
   defmodule MockTransport do
     @behaviour Jido.Chat.Telegram.Transport
@@ -39,6 +41,33 @@ defmodule Jido.Chat.Telegram.ChannelTest do
 
         "setMessageReaction" ->
           {:ok, true}
+
+        "sendPhoto" ->
+          {:ok,
+           %{
+             "message_id" => 77,
+             "chat" => %{"id" => payload["chat_id"]},
+             "date" => 1_706_745_601,
+             "photo" => [%{"file_id" => "photo-file-id"}],
+             "caption" => payload["caption"]
+           }}
+
+        "sendDocument" ->
+          {:ok,
+           %{
+             "message_id" => 78,
+             "chat" => %{"id" => payload["chat_id"]},
+             "date" => 1_706_745_602,
+             "document" => %{"file_id" => "document-file-id"},
+             "caption" => payload["caption"]
+           }}
+
+        "createForumTopic" ->
+          {:ok,
+           %{
+             "message_thread_id" => 321,
+             "name" => payload["name"]
+           }}
       end
     end
   end
@@ -93,16 +122,19 @@ defmodule Jido.Chat.Telegram.ChannelTest do
   end
 
   test "channel metadata" do
-    assert Channel.channel_type() == :telegram
-    assert :text in Channel.capabilities()
-    assert :message_edit in Channel.capabilities()
-    assert :message_delete in Channel.capabilities()
+    caps = Adapter.capabilities()
+
+    assert Adapter.channel_type() == :telegram
+    assert caps.send_message == :native
+    assert caps.edit_message == :native
+    assert caps.delete_message == :native
   end
 
   test "adapter capabilities matrix declares supported and unsupported surfaces" do
     caps = Jido.Chat.Telegram.Adapter.capabilities()
 
     assert caps.send_message == :native
+    assert caps.send_file == :native
     assert caps.edit_message == :native
     assert caps.fetch_messages == :unsupported
     assert caps.list_threads == :unsupported
@@ -110,6 +142,14 @@ defmodule Jido.Chat.Telegram.ChannelTest do
     assert caps.post_ephemeral == :fallback
 
     assert :ok = Jido.Chat.Adapter.validate_capabilities(Jido.Chat.Telegram.Adapter)
+  end
+
+  test "delivery capabilities include canonical single-file media support but not multi-file" do
+    caps = Capabilities.channel_capabilities(Jido.Chat.Telegram.Adapter)
+
+    assert :image in caps
+    assert :file in caps
+    refute :multi_file in caps
   end
 
   test "adapter extension capabilities expose telegram-only surface" do
@@ -131,7 +171,7 @@ defmodule Jido.Chat.Telegram.ChannelTest do
       }
     }
 
-    assert {:ok, incoming} = Channel.transform_incoming(update)
+    assert {:ok, incoming} = Adapter.transform_incoming(update)
     assert incoming.external_room_id == 789
     assert incoming.external_user_id == 111
     assert incoming.text == "Hello group!"
@@ -160,20 +200,20 @@ defmodule Jido.Chat.Telegram.ChannelTest do
       }
     }
 
-    assert {:ok, incoming} = Channel.transform_incoming(update)
+    assert {:ok, incoming} = Adapter.transform_incoming(update)
     assert [%{kind: :image, url: "telegram://file/photo-large"}] = incoming.media
   end
 
   test "transform_incoming/1 errors for missing/unsupported updates" do
-    assert {:error, :no_message} = Channel.transform_incoming(%{"message" => nil})
+    assert {:error, :no_message} = Adapter.transform_incoming(%{"message" => nil})
 
     assert {:error, :unsupported_update_type} =
-             Channel.transform_incoming(%{"edited_message" => %{}})
+             Adapter.transform_incoming(%{"edited_message" => %{}})
   end
 
   test "send_message/3 uses configured transport and returns normalized send result" do
     assert {:ok, result} =
-             Channel.send_message(123, "hello",
+             Adapter.send_message(123, "hello",
                token: "bot-token",
                transport: MockTransport,
                parse_mode: "HTML"
@@ -273,9 +313,23 @@ defmodule Jido.Chat.Telegram.ChannelTest do
     refute_received {:transport_call, "bot-token", "sendMessage", _payload}
   end
 
+  test "send_message/3 maps generic reply and thread routing to telegram payload fields" do
+    assert {:ok, _result} =
+             Adapter.send_message(123, "hello",
+               token: "bot-token",
+               transport: MockTransport,
+               reply_to_id: 456,
+               external_thread_id: "999"
+             )
+
+    assert_received {:transport_call, "bot-token", "sendMessage", payload}
+    assert payload["reply_to_message_id"] == 456
+    assert payload["message_thread_id"] == "999"
+  end
+
   test "edit_message/4 handles boolean telegram response" do
     assert {:ok, result} =
-             Channel.edit_message(123, 42, "updated",
+             Adapter.edit_message(123, 42, "updated",
                token: "bot-token",
                transport: MockTransport
              )
@@ -291,7 +345,7 @@ defmodule Jido.Chat.Telegram.ChannelTest do
   end
 
   test "delete_message/3 delegates to transport" do
-    assert :ok = Channel.delete_message(123, 42, token: "bot-token", transport: MockTransport)
+    assert :ok = Adapter.delete_message(123, 42, token: "bot-token", transport: MockTransport)
 
     assert_received {:transport_call, "bot-token", "deleteMessage", payload}
     assert payload["chat_id"] == 123
@@ -300,7 +354,7 @@ defmodule Jido.Chat.Telegram.ChannelTest do
 
   test "start_typing/2 delegates to transport" do
     assert :ok =
-             Channel.start_typing(123,
+             Adapter.start_typing(123,
                token: "bot-token",
                action: "upload_photo",
                transport: MockTransport
@@ -313,7 +367,7 @@ defmodule Jido.Chat.Telegram.ChannelTest do
 
   test "fetch_metadata/2 returns normalized channel info" do
     assert {:ok, info} =
-             Channel.fetch_metadata(123,
+             Adapter.fetch_metadata(123,
                token: "bot-token",
                transport: MockTransport
              )
@@ -327,7 +381,7 @@ defmodule Jido.Chat.Telegram.ChannelTest do
 
   test "fetch_metadata/2 normalizes struct metadata into plain map" do
     assert {:ok, info} =
-             Channel.fetch_metadata(123,
+             Adapter.fetch_metadata(123,
                token: "bot-token",
                transport: StructMetadataTransport
              )
@@ -340,12 +394,12 @@ defmodule Jido.Chat.Telegram.ChannelTest do
   end
 
   test "open_dm/2 maps to user id on telegram" do
-    assert {:ok, "99"} = Channel.open_dm("99", [])
+    assert {:ok, "99"} = Adapter.open_dm("99", [])
   end
 
   test "post_ephemeral/4 uses fallback dm flow" do
     assert {:ok, ephemeral} =
-             Channel.post_ephemeral(123, "99", "secret",
+             Adapter.post_ephemeral(123, "99", "secret",
                fallback_to_dm: true,
                token: "bot-token",
                transport: MockTransport
@@ -361,7 +415,7 @@ defmodule Jido.Chat.Telegram.ChannelTest do
 
   test "add/remove reaction delegate through transport" do
     assert :ok =
-             Channel.add_reaction(123, 42, "👍",
+             Adapter.add_reaction(123, 42, "👍",
                token: "bot-token",
                transport: MockTransport
              )
@@ -372,7 +426,7 @@ defmodule Jido.Chat.Telegram.ChannelTest do
     assert payload["reaction"] == [%{"type" => "emoji", "emoji" => "👍"}]
 
     assert :ok =
-             Channel.remove_reaction(123, 42, "👍",
+             Adapter.remove_reaction(123, 42, "👍",
                token: "bot-token",
                transport: MockTransport
              )
@@ -381,24 +435,177 @@ defmodule Jido.Chat.Telegram.ChannelTest do
     assert payload2["reaction"] == []
   end
 
+  test "send_file/3 sends images and maps generic reply/thread options" do
+    assert {:ok, response} =
+             Adapter.send_file(
+               123,
+               %FileUpload{
+                 kind: :image,
+                 url: "https://example.com/test.png",
+                 metadata: %{"caption" => "hello"}
+               },
+               token: "bot-token",
+               transport: MockTransport,
+               reply_to_id: 42,
+               external_thread_id: 99
+             )
+
+    assert response.external_message_id == "77"
+    assert response.external_room_id == 123
+    assert response.metadata.file_id == "photo-file-id"
+    assert response.metadata.upload_kind == :image
+
+    assert_received {:transport_call, "bot-token", "sendPhoto", payload}
+    assert payload["chat_id"] == 123
+    assert payload["photo"] == "https://example.com/test.png"
+    assert payload["caption"] == "hello"
+    assert payload["reply_to_message_id"] == 42
+    assert payload["message_thread_id"] == 99
+  end
+
+  test "send_file/3 supports filesystem paths and raw byte uploads" do
+    path =
+      Path.join(
+        System.tmp_dir!(),
+        "jido-telegram-upload-#{System.unique_integer([:positive])}.txt"
+      )
+
+    File.write!(path, "telegram path upload\n")
+
+    on_exit(fn ->
+      File.rm(path)
+    end)
+
+    assert {:ok, path_response} =
+             Adapter.send_file(
+               123,
+               %FileUpload{
+                 kind: :file,
+                 path: path,
+                 filename: Path.basename(path)
+               },
+               token: "bot-token",
+               transport: MockTransport
+             )
+
+    assert path_response.external_message_id == "78"
+    assert_received {:transport_call, "bot-token", "sendDocument", path_payload}
+    assert path_payload["document"] == {:file, path}
+
+    assert {:ok, data_response} =
+             Adapter.send_file(
+               123,
+               %FileUpload{
+                 kind: :file,
+                 data: "telegram bytes upload\n",
+                 filename: "bytes.txt"
+               },
+               token: "bot-token",
+               transport: MockTransport
+             )
+
+    assert data_response.external_message_id == "78"
+    assert_received {:transport_call, "bot-token", "sendDocument", data_payload}
+    assert data_payload["document"] == {:file_content, "telegram bytes upload\n", "bytes.txt"}
+  end
+
+  test "send_file/3 returns explicit validation errors for missing upload data" do
+    assert {:error, :missing_filename} =
+             Adapter.send_file(
+               123,
+               %FileUpload{kind: :file, data: "telegram bytes upload\n"},
+               token: "bot-token",
+               transport: MockTransport
+             )
+
+    assert {:error, :missing_file_source} =
+             Adapter.send_file(
+               123,
+               %FileUpload{kind: :file, filename: "missing.txt"},
+               token: "bot-token",
+               transport: MockTransport
+             )
+  end
+
+  test "core post_message/4 uses telegram send_file support for canonical uploads" do
+    payload =
+      PostPayload.new(%{
+        text: "doc caption",
+        files: [
+          %{
+            kind: :file,
+            url: "https://example.com/test.pdf",
+            filename: "test.pdf"
+          }
+        ]
+      })
+
+    assert {:ok, response} =
+             ChatAdapter.post_message(
+               Jido.Chat.Telegram.Adapter,
+               123,
+               payload,
+               token: "bot-token",
+               transport: MockTransport,
+               reply_to_id: 41,
+               external_thread_id: 88
+             )
+
+    assert response.external_message_id == "78"
+    assert response.external_room_id == 123
+    assert response.metadata.file_id == "document-file-id"
+    assert response.metadata.upload_kind == :file
+
+    assert_received {:transport_call, "bot-token", "sendDocument", payload}
+    assert payload["document"] == "https://example.com/test.pdf"
+    assert payload["caption"] == "doc caption"
+    assert payload["reply_to_message_id"] == 41
+    assert payload["message_thread_id"] == 88
+  end
+
   test "add/remove reaction map unsupported transport method to unsupported" do
     assert {:error, :unsupported} =
-             Channel.add_reaction(123, 42, "👍",
+             Adapter.add_reaction(123, 42, "👍",
                token: "bot-token",
                transport: ReactionUnsupportedTransport
              )
 
     assert {:error, :unsupported} =
-             Channel.remove_reaction(123, 42, "👍",
+             Adapter.remove_reaction(123, 42, "👍",
                token: "bot-token",
                transport: ReactionUnsupportedTransport
              )
   end
 
   test "history/list_threads remain unsupported in telegram phase 2" do
-    assert {:error, :unsupported} = Channel.fetch_messages(123, [])
-    assert {:error, :unsupported} = Channel.fetch_channel_messages(123, [])
-    assert {:error, :unsupported} = Channel.list_threads(123, [])
+    assert {:error, :unsupported} = Adapter.fetch_messages(123, [])
+    assert {:error, :unsupported} = Adapter.fetch_channel_messages(123, [])
+    assert {:error, :unsupported} = Adapter.list_threads(123, [])
+  end
+
+  test "open_thread/3 creates forum topics and normalizes room/thread ids" do
+    assert {:ok, thread} =
+             Adapter.open_thread(123, nil,
+               token: "bot-token",
+               topic_name: "Live Review",
+               transport: MockTransport
+             )
+
+    assert thread.external_thread_id == "321"
+    assert thread.delivery_external_room_id == "123"
+
+    assert_received {:transport_call, "bot-token", "createForumTopic", payload}
+    assert payload["chat_id"] == 123
+    assert payload["name"] == "Live Review"
+  end
+
+  test "open_thread/3 can be explicitly disabled" do
+    assert {:error, :unsupported} =
+             Adapter.open_thread(123, nil,
+               token: "bot-token",
+               supports_forum_topics: false,
+               transport: MockTransport
+             )
   end
 
   test "handle_webhook/3 normalizes and routes through Jido.Chat.process_message/5" do
@@ -417,7 +624,7 @@ defmodule Jido.Chat.Telegram.ChannelTest do
     }
 
     assert {:ok, _updated_chat, %Jido.Chat.Incoming{} = incoming} =
-             Channel.handle_webhook(chat, update, [])
+             Adapter.handle_webhook(chat, update, [])
 
     assert incoming.external_room_id == 123
     assert incoming.external_message_id == 999
@@ -439,7 +646,7 @@ defmodule Jido.Chat.Telegram.ChannelTest do
     }
 
     assert {:ok, _updated_chat, %Jido.Chat.Incoming{external_message_id: 222}} =
-             Channel.handle_webhook(chat, update, [])
+             Adapter.handle_webhook(chat, update, [])
 
     assert_received :slash_hit
   end
@@ -460,7 +667,7 @@ defmodule Jido.Chat.Telegram.ChannelTest do
     }
 
     assert {:ok, _updated_chat, %Jido.Chat.Incoming{external_message_id: 223}} =
-             Channel.handle_webhook(chat, update, [])
+             Adapter.handle_webhook(chat, update, [])
 
     assert_received :slash_hit
     assert_received :message_hit
@@ -480,7 +687,7 @@ defmodule Jido.Chat.Telegram.ChannelTest do
 
     assert {:ok, _updated_chat,
             %Jido.Chat.Incoming{external_message_id: 333, text: "edited text"}} =
-             Channel.handle_webhook(chat, update, [])
+             Adapter.handle_webhook(chat, update, [])
   end
 
   test "handle_webhook/3 accepts channel_post and edited_channel_post update families" do
@@ -504,11 +711,11 @@ defmodule Jido.Chat.Telegram.ChannelTest do
 
     assert {:ok, _updated_chat,
             %Jido.Chat.Incoming{external_room_id: -100_123, external_message_id: 444}} =
-             Channel.handle_webhook(chat, channel_post, [])
+             Adapter.handle_webhook(chat, channel_post, [])
 
     assert {:ok, _updated_chat,
             %Jido.Chat.Incoming{external_room_id: -100_123, external_message_id: 445}} =
-             Channel.handle_webhook(chat, edited_channel_post, [])
+             Adapter.handle_webhook(chat, edited_channel_post, [])
   end
 
   test "handle_webhook/3 routes callback_query and reaction updates into process_* handlers" do
@@ -530,7 +737,7 @@ defmodule Jido.Chat.Telegram.ChannelTest do
     }
 
     assert {:ok, _chat, %Jido.Chat.Incoming{metadata: %{event_type: :action}}} =
-             Channel.handle_webhook(chat, callback_update, [])
+             Adapter.handle_webhook(chat, callback_update, [])
 
     assert_received :action_hit
 
@@ -545,7 +752,7 @@ defmodule Jido.Chat.Telegram.ChannelTest do
     }
 
     assert {:ok, _chat, %Jido.Chat.Incoming{metadata: %{event_type: :reaction}}} =
-             Channel.handle_webhook(chat, reaction_update, [])
+             Adapter.handle_webhook(chat, reaction_update, [])
 
     assert_received :reaction_hit
   end
@@ -563,7 +770,7 @@ defmodule Jido.Chat.Telegram.ChannelTest do
     }
 
     assert {:error, :invalid_webhook_secret} =
-             Channel.handle_webhook(chat, update,
+             Adapter.handle_webhook(chat, update,
                secret_token: "expected",
                headers: %{"x-telegram-bot-api-secret-token" => "wrong"}
              )

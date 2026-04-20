@@ -1,6 +1,7 @@
 defmodule Jido.Chat.Telegram.Transport.ExGramClientTest do
   use ExUnit.Case, async: true
 
+  alias ExGram.Model.ReactionTypeEmoji
   alias Jido.Chat.Telegram.ExGramAdapter
   alias Jido.Chat.Telegram.Transport.ExGramClient
 
@@ -201,7 +202,7 @@ defmodule Jido.Chat.Telegram.Transport.ExGramClientTest do
              )
 
     assert_received {:set_message_reaction, 1, 7, opts}
-    assert Keyword.get(opts, :reaction) == [%{"type" => "emoji", "emoji" => "👍"}]
+    assert Keyword.get(opts, :reaction) == [%ReactionTypeEmoji{type: "emoji", emoji: "👍"}]
     assert Keyword.get(opts, :is_big) == true
     assert Keyword.get(opts, :token) == "abc"
   end
