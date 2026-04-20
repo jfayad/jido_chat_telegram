@@ -170,6 +170,7 @@ defmodule Jido.Chat.Telegram.Adapter do
     end
   end
 
+  @impl true
   def send_file(chat_id, file, opts \\ []) do
     upload = FileUpload.normalize(file)
 

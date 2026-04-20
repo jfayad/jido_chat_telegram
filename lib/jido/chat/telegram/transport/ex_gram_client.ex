@@ -233,11 +233,7 @@ defmodule Jido.Chat.Telegram.Transport.ExGramClient do
   defp ex_gram_module(opts), do: Keyword.get(opts, :ex_gram_module, ExGram)
 
   defp ex_gram_http_adapter(opts) do
-    Keyword.get(
-      opts,
-      :ex_gram_adapter,
-      ExGram.Config.get(:ex_gram, :adapter, ExGram.Adapter.Tesla)
-    )
+    ex_gram_adapter(opts)
   end
 
   defp build_path(token, name) do
