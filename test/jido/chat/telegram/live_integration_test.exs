@@ -206,6 +206,13 @@ defmodule Jido.Chat.Telegram.LiveIntegrationTest do
 
     assert photo.kind == :photo
     assert to_string(photo.chat_id) == to_string(ctx.chat_id)
+    photo_id = message_id(photo)
+
+    on_exit(fn ->
+      cleanup_delete(fn ->
+        Adapter.delete_message(ctx.chat_id, photo_id, ctx.opts)
+      end)
+    end)
 
     assert {:ok, document} =
              Extensions.send_document(ctx.chat_id, document_ref,
@@ -215,6 +222,13 @@ defmodule Jido.Chat.Telegram.LiveIntegrationTest do
 
     assert document.kind == :document
     assert to_string(document.chat_id) == to_string(ctx.chat_id)
+    document_id = message_id(document)
+
+    on_exit(fn ->
+      cleanup_delete(fn ->
+        Adapter.delete_message(ctx.chat_id, document_id, ctx.opts)
+      end)
+    end)
   end
 
   test "canonical media sends succeed through send_file and core post_message", ctx do
