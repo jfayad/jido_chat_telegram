@@ -16,8 +16,7 @@ No Telegex dependency is required.
 ```elixir
 def deps do
   [
-    {:jido_chat, github: "agentjido/jido_chat", branch: "main"},
-    {:jido_chat_telegram, github: "agentjido/jido_chat_telegram", branch: "main"}
+    {:jido_chat_telegram, "~> 1.0"}
   ]
 end
 ```
