@@ -20,6 +20,7 @@ defmodule Jido.Chat.Telegram.Adapter do
     DeleteOptions,
     EditOptions,
     Extensions,
+    Ingress,
     MetadataOptions,
     PollingWorker,
     ReactionOptions,
@@ -72,9 +73,9 @@ defmodule Jido.Chat.Telegram.Adapter do
 
   @impl true
   def listener_child_specs(bridge_id, opts \\ []) when is_binary(bridge_id) and is_list(opts) do
-    ingress = normalize_ingress_opts(opts)
+    ingress = Ingress.normalize_opts(opts)
 
-    case ingress_mode(ingress) do
+    case Ingress.mode(ingress) do
       :webhook ->
         {:ok, []}
 
@@ -94,6 +95,36 @@ defmodule Jido.Chat.Telegram.Adapter do
       :invalid ->
         {:error, :invalid_ingress_mode}
     end
+  end
+
+  @doc """
+  Ensures Telegram webhook ingress for a messaging bridge.
+
+  Telegram supports one webhook per bot token, so the subscription id is
+  deterministic for the bridge and maps to the bot's current webhook.
+  """
+  @spec ensure_ingress_subscription(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def ensure_ingress_subscription(bridge_id, opts \\ [])
+      when is_binary(bridge_id) and is_list(opts) do
+    Ingress.ensure_subscription(bridge_id, opts)
+  end
+
+  @doc """
+  Lists the Telegram webhook ingress subscription for a messaging bridge.
+  """
+  @spec list_ingress_subscriptions(String.t(), keyword()) :: {:ok, [map()]} | {:error, term()}
+  def list_ingress_subscriptions(bridge_id, opts \\ []) when is_binary(bridge_id) and is_list(opts) do
+    Ingress.list_subscriptions(bridge_id, opts)
+  end
+
+  @doc """
+  Deletes the Telegram webhook ingress subscription for a messaging bridge.
+  """
+  @spec delete_ingress_subscription(String.t(), String.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def delete_ingress_subscription(bridge_id, subscription_id, opts \\ [])
+      when is_binary(bridge_id) and is_binary(subscription_id) and is_list(opts) do
+    Ingress.delete_subscription(bridge_id, subscription_id, opts)
   end
 
   @impl true
@@ -1072,35 +1103,6 @@ defmodule Jido.Chat.Telegram.Adapter do
 
   defp normalize_metadata(list) when is_list(list), do: Enum.map(list, &normalize_metadata/1)
   defp normalize_metadata(other), do: other
-
-  defp normalize_ingress_opts(opts) do
-    ingress = Keyword.get(opts, :ingress, %{}) |> ensure_map()
-    settings_ingress = settings_ingress(opts)
-
-    Map.merge(settings_ingress, ingress)
-  end
-
-  defp settings_ingress(opts) do
-    opts
-    |> Keyword.get(:settings, %{})
-    |> ensure_map()
-    |> map_get([:ingress, "ingress"])
-    |> ensure_map()
-  end
-
-  defp ensure_map(%{} = map), do: map
-  defp ensure_map(_), do: %{}
-
-  defp ingress_mode(ingress) do
-    case map_get(ingress, [:mode, "mode"]) do
-      nil -> :webhook
-      :webhook -> :webhook
-      :polling -> :polling
-      "webhook" -> :webhook
-      "polling" -> :polling
-      _ -> :invalid
-    end
-  end
 
   defp validate_sink_mfa({module, function, args})
        when is_atom(module) and is_atom(function) and is_list(args),
